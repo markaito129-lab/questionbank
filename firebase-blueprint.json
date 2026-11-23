@@ -1,0 +1,204 @@
+{
+  "entities": {
+    "Question": {
+      "title": "Question",
+      "description": "A multiple-choice speed-solving question belonging to a specific age-group question bank.",
+      "type": "object",
+      "properties": {
+        "ageGroup": {
+          "type": "string",
+          "enum": ["Beginners", "Primary", "Juniors", "Intermediate", "Seniors", "Open"],
+          "description": "The age group bank this question belongs to."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 1200,
+          "description": "The question text presented to the student."
+        },
+        "options": {
+          "type": "array",
+          "description": "Exactly four answer choices for the question."
+        },
+        "correctIndex": {
+          "type": "integer",
+          "description": "Zero-based index (0-3) of the correct choice."
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Short topic label such as Arithmetic, Logic, or Algebra."
+        },
+        "explanation": {
+          "type": "string",
+          "maxLength": 600,
+          "description": "Optional brief solution note."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether the question is active in the bank."
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the admin who created the question."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ageGroup",
+        "prompt",
+        "options",
+        "correctIndex",
+        "topic",
+        "explanation",
+        "isActive",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "A completed timed quiz submission ranked on an age-group leaderboard.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the student who submitted the quiz."
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Public display name on the leaderboard."
+        },
+        "ageGroup": {
+          "type": "string",
+          "enum": ["Beginners", "Primary", "Juniors", "Intermediate", "Seniors", "Open"],
+          "description": "Age group leaderboard category."
+        },
+        "score": {
+          "type": "number",
+          "description": "Net score: correctCount * 1 - wrongCount * 0.25."
+        },
+        "correctCount": {
+          "type": "integer",
+          "description": "Number of correct answers."
+        },
+        "wrongCount": {
+          "type": "integer",
+          "description": "Number of wrong answers."
+        },
+        "skippedCount": {
+          "type": "integer",
+          "description": "Number of skipped or unanswered questions."
+        },
+        "totalQuestions": {
+          "type": "integer",
+          "description": "Total questions in the bank during this attempt."
+        },
+        "elapsedSeconds": {
+          "type": "number",
+          "description": "Time taken in seconds (0 to 1800)."
+        },
+        "isPublished": {
+          "type": "boolean",
+          "description": "Indicates the entry is published to the age-group leaderboard."
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server submission timestamp."
+        }
+      },
+      "required": [
+        "userId",
+        "studentName",
+        "ageGroup",
+        "score",
+        "correctCount",
+        "wrongCount",
+        "skippedCount",
+        "totalQuestions",
+        "elapsedSeconds",
+        "isPublished",
+        "submittedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Document granting admin privileges to a specific user UID.",
+      "type": "object",
+      "properties": {
+        "addedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the admin who granted access."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        }
+      },
+      "required": ["addedBy", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private student preferences without PII or role fields.",
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Preferred leaderboard display name."
+        },
+        "preferredAgeGroup": {
+          "type": "string",
+          "enum": ["Beginners", "Primary", "Juniors", "Intermediate", "Seniors", "Open"],
+          "description": "Last selected age group."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["displayName", "preferredAgeGroup", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/Question" },
+      "description": "Question bank items partitioned by ageGroup."
+    },
+    "/leaderboard_entries/{entryId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Completed 30-minute quiz results ranked per age group."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Registry of additional admin user UIDs."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-only student preference profiles."
+    }
+  }
+}

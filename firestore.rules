@@ -1,0 +1,226 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Primitives
+    // -------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'markaito129@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidAgeGroup(ageGroup) {
+      return ageGroup is string && ageGroup in [
+        'Beginners',
+        'Primary',
+        'Juniors',
+        'Intermediate',
+        'Seniors',
+        'Open'
+      ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Question Validation Blueprint
+    // -------------------------------------------------------------------------
+    function isValidOptions(options) {
+      return options is list
+        && options.size() == 4
+        && options[0] is string && options[0].size() >= 1 && options[0].size() <= 300
+        && options[1] is string && options[1].size() >= 1 && options[1].size() <= 300
+        && options[2] is string && options[2].size() >= 1 && options[2].size() <= 300
+        && options[3] is string && options[3].size() >= 1 && options[3].size() <= 300;
+    }
+
+    function isValidQuestion(data) {
+      return data.keys().hasAll([
+          'ageGroup', 'prompt', 'options', 'correctIndex',
+          'topic', 'explanation', 'isActive', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ageGroup', 'prompt', 'options', 'correctIndex',
+          'topic', 'explanation', 'isActive', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidAgeGroup(data.ageGroup)
+        && data.prompt is string && data.prompt.size() >= 3 && data.prompt.size() <= 1200
+        && isValidOptions(data.options)
+        && data.correctIndex is int && data.correctIndex >= 0 && data.correctIndex <= 3
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 80
+        && data.explanation is string && data.explanation.size() <= 600
+        && data.isActive is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Leaderboard Entry Validation Blueprint
+    // -------------------------------------------------------------------------
+    function isValidLeaderboardEntry(data) {
+      return data.keys().hasAll([
+          'userId', 'studentName', 'ageGroup', 'score',
+          'correctCount', 'wrongCount', 'skippedCount', 'totalQuestions',
+          'elapsedSeconds', 'isPublished', 'submittedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'studentName', 'ageGroup', 'score',
+          'correctCount', 'wrongCount', 'skippedCount', 'totalQuestions',
+          'elapsedSeconds', 'isPublished', 'submittedAt'
+        ])
+        && isValidId(data.userId)
+        && data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 60
+        && isValidAgeGroup(data.ageGroup)
+        && data.correctCount is int && data.correctCount >= 0 && data.correctCount <= 500
+        && data.wrongCount is int && data.wrongCount >= 0 && data.wrongCount <= 500
+        && data.skippedCount is int && data.skippedCount >= 0 && data.skippedCount <= 500
+        && data.totalQuestions is int && data.totalQuestions >= 1 && data.totalQuestions <= 500
+        && (data.correctCount + data.wrongCount + data.skippedCount) == data.totalQuestions
+        && data.score is number && data.score >= -125 && data.score <= 500
+        && (data.score * 4) == ((data.correctCount * 4) - data.wrongCount)
+        && data.elapsedSeconds is number && data.elapsedSeconds >= 0 && data.elapsedSeconds <= 1800
+        && data.isPublished is bool
+        && data.submittedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Admin Registry Validation Blueprint
+    // -------------------------------------------------------------------------
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['addedBy', 'createdAt'])
+        && data.keys().hasOnly(['addedBy', 'createdAt'])
+        && isValidId(data.addedBy)
+        && data.createdAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // User Profile Validation Blueprint (PII-free)
+    // -------------------------------------------------------------------------
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['displayName', 'preferredAgeGroup', 'updatedAt'])
+        && data.keys().hasOnly(['displayName', 'preferredAgeGroup', 'updatedAt'])
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
+        && isValidAgeGroup(data.preferredAgeGroup)
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules
+    // -------------------------------------------------------------------------
+    match /questions/{questionId} {
+      allow get: if isValidId(questionId) && (existing().isActive == true || isAdmin());
+      allow list: if resource.data.isActive == true || isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidId(questionId)
+        && isValidQuestion(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isAdmin();
+
+      allow update: if isVerifiedUser()
+        && isValidId(questionId)
+        && isValidQuestion(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'ageGroup', 'prompt', 'options', 'correctIndex',
+          'topic', 'explanation', 'isActive', 'updatedAt'
+        ])
+        && isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(questionId) && isAdmin();
+    }
+
+    match /leaderboard_entries/{entryId} {
+      allow get: if isValidId(entryId) && (
+        existing().isPublished == true
+        || (isSignedIn() && existing().userId == request.auth.uid)
+        || isAdmin()
+      );
+      allow list: if resource.data.isPublished == true
+        || (isSignedIn() && resource.data.userId == request.auth.uid)
+        || isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidId(entryId)
+        && isValidLeaderboardEntry(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().isPublished == true
+        && incoming().submittedAt == request.time;
+
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(entryId) && isAdmin();
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && ((isSignedIn() && request.auth.uid == adminUid) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidId(adminUid)
+        && isValidAdminUser(incoming())
+        && incoming().addedBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && isAdmin();
+
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(adminUid) && isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isBootstrappedAdmin();
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'preferredAgeGroup', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+  }
+}
