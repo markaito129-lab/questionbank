@@ -49,6 +49,8 @@ function SprintQuizApp() {
     null
   );
   const [authError, setAuthError] = useState<string>('');
+  const [unauthorizedHost, setUnauthorizedHost] = useState<string | null>(null);
+  const [copiedHost, setCopiedHost] = useState(false);
   const autoSeededRef = useRef(false);
 
   // Firebase Auth listener
@@ -148,19 +150,34 @@ function SprintQuizApp() {
 
   const handleSignIn = useCallback(async (): Promise<User | null> => {
     setAuthError('');
+    setUnauthorizedHost(null);
+    setCopiedHost(false);
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       return cred.user;
     } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
       const msg =
         err instanceof Error ? err.message : 'Sign-in was cancelled or failed.';
-      setAuthError(msg);
+      if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+        const host = window.location.hostname;
+        setUnauthorizedHost(host);
+        setAuthError(
+          `Domain "${host}" is not authorized in Firebase Authentication for project lesson-plan-generator-502913.`
+        );
+      } else {
+        setAuthError(msg);
+      }
       return null;
     }
   }, []);
 
   const handleSignOut = useCallback(async () => {
     setAuthError('');
+    setUnauthorizedHost(null);
     await signOut(auth);
   }, []);
 
@@ -200,15 +217,39 @@ function SprintQuizApp() {
 
       {authError && (
         <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pt-4">
-          <div className="px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-center justify-between">
-            <span>{authError}</span>
-            <button
-              type="button"
-              onClick={() => setAuthError('')}
-              className="font-semibold underline ml-4 cursor-pointer"
-            >
-              Dismiss
-            </button>
+          <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <p className="font-medium">{authError}</p>
+              {unauthorizedHost && (
+                <p className="text-red-800">
+                  Add <code className="font-mono bg-red-100 px-1.5 py-0.5 rounded">{unauthorizedHost}</code> (hostname only, without https://) under Firebase Console → Authentication → Settings → Authorized domains.
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              {unauthorizedHost && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(unauthorizedHost);
+                    setCopiedHost(true);
+                  }}
+                  className="px-2.5 py-1 bg-white border border-red-200 rounded font-semibold text-red-800 hover:bg-red-100 cursor-pointer"
+                >
+                  {copiedHost ? 'Copied' : 'Copy Hostname'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError('');
+                  setUnauthorizedHost(null);
+                }}
+                className="font-semibold underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         </div>
       )}
