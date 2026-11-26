@@ -91,6 +91,7 @@ async function startServer() {
         'Extract all multiple-choice quiz questions from the attached PDF document.',
         'For each question:',
         '- Preserve the exact mathematical symbols, numbers, and wording in "prompt".',
+        '- Format mathematical expressions, fractions, exponents, roots, integrals, matrices, inequalities, and Greek letters in clean LaTeX wrapped in single dollar signs $...$ (for inline math, e.g., $\\frac{3}{4}$, $x^2 - 5x + 6 = 0$, $\\sqrt{2}$) across "prompt", "options", and "explanation". Keep currency values like $150 as plain text (or use \\$150 only if adjacent to math).',
         '- Provide between 2 and 5 answer options in "options" (matching the choices in the PDF, e.g., A-D or A-E). If a question is open-ended without multiple-choice options, skip it.',
         '- Determine "correctIndex" (0 for A/first, 1 for B/second, 2 for C/third, 3 for D/fourth, 4 for E/fifth). Use the document answer key if present; otherwise solve carefully to identify the mathematically/factually correct option.',
         '- Assign a short "topic" (1 to 3 words, e.g. "Algebra", "Arithmetic", "Logic").',

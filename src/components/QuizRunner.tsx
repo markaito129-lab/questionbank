@@ -19,6 +19,7 @@ import {
   formatDurationMMSS,
   shuffleArray,
 } from '../utils/formatters';
+import { MathText } from './MathText';
 
 interface QuizRunnerProps {
   ageGroup: AgeGroup;
@@ -238,7 +239,7 @@ export function QuizRunner({
         </div>
 
         <h2 className="text-xl sm:text-2xl font-semibold text-slate-900 leading-snug">
-          {currentQuestion.prompt}
+          <MathText text={currentQuestion.prompt} />
         </h2>
 
         {/* Answer Options */}
@@ -267,7 +268,9 @@ export function QuizRunner({
                 >
                   {OPTION_LETTERS[idx]}
                 </span>
-                <span className="text-base leading-relaxed pt-0.5">{optionText}</span>
+                <span className="text-base leading-relaxed pt-0.5">
+                  <MathText text={optionText} />
+                </span>
               </button>
             );
           })}

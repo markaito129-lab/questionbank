@@ -6,7 +6,9 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
+  Pencil,
   Plus,
+  Save,
   Search,
   ShieldAlert,
   Trash2,
@@ -27,12 +29,14 @@ import {
   createQuestionsBatch,
   deleteQuestion,
   seedStarterQuestions,
+  updateQuestion,
 } from '../services/quizService';
 import {
   downloadExcelTemplate,
   fileToBase64,
   parseSpreadsheetFile,
 } from '../utils/importParsers';
+import { hasMathMarkup, MathText } from './MathText';
 
 interface AdminConsoleProps {
   user: User | null;
@@ -56,6 +60,8 @@ export function AdminConsole({
 }: AdminConsoleProps) {
   const [selectedGroup, setSelectedGroup] = useState<AgeGroup>('Beginners');
   const [entryMode, setEntryMode] = useState<'single' | 'import'>('single');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formAgeGroup, setFormAgeGroup] = useState<AgeGroup>('Beginners');
   const [topic, setTopic] = useState('');
   const [prompt, setPrompt] = useState('');
   const [options, setOptions] = useState<string[]>(['', '', '', '']);
@@ -71,6 +77,7 @@ export function AdminConsole({
   const [importNotes, setImportNotes] = useState<string>('');
   const [sourceFileName, setSourceFileName] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const formCardRef = useRef<HTMLDivElement | null>(null);
 
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
@@ -107,6 +114,45 @@ export function AdminConsole({
       });
   }, [questions, searchTerm, selectedGroup]);
 
+  const showMathPreview = useMemo(
+    () =>
+      hasMathMarkup(prompt) ||
+      options.some((opt) => hasMathMarkup(opt)) ||
+      hasMathMarkup(explanation),
+    [prompt, options, explanation]
+  );
+
+  const handleSelectGroup = (group: AgeGroup) => {
+    setSelectedGroup(group);
+    if (!editingId) {
+      setFormAgeGroup(group);
+    }
+  };
+
+  const resetForm = (targetGroup?: AgeGroup) => {
+    setEditingId(null);
+    setFormAgeGroup(targetGroup ?? selectedGroup);
+    setTopic('');
+    setPrompt('');
+    setOptions(['', '', '', '']);
+    setCorrectIndex(0);
+    setExplanation('');
+  };
+
+  const handleStartEdit = (q: Question) => {
+    setEntryMode('single');
+    setEditingId(q.id);
+    setFormAgeGroup(q.ageGroup);
+    setTopic(q.topic);
+    setPrompt(q.prompt);
+    setOptions([...q.options]);
+    setCorrectIndex(q.correctIndex);
+    setExplanation(q.explanation || '');
+    setConfirmDeleteId(null);
+    setFeedback(null);
+    formCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+
   const handleOptionChange = (index: number, value: string) => {
     setOptions((prev) => prev.map((item, i) => (i === index ? value : item)));
   };
@@ -126,36 +172,46 @@ export function AdminConsole({
     }
   };
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const handleSubmitSingle = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
     setFeedback(null);
     setSubmitting(true);
+    const payload: NewQuestionInput = {
+      ageGroup: formAgeGroup,
+      topic: topic.trim() || 'General',
+      prompt,
+      options,
+      correctIndex,
+      explanation,
+    };
+
     try {
-      await createQuestion(
-        {
-          ageGroup: selectedGroup,
-          topic: topic.trim() || 'General',
-          prompt,
-          options,
-          correctIndex,
-          explanation,
-        },
-        user.uid
-      );
-      setTopic('');
-      setPrompt('');
-      setOptions(['', '', '', '']);
-      setCorrectIndex(0);
-      setExplanation('');
-      setFeedback({
-        type: 'success',
-        text: `Question added to the ${selectedGroup} question bank.`,
-      });
+      if (editingId) {
+        await updateQuestion(editingId, payload);
+        setSelectedGroup(formAgeGroup);
+        resetForm(formAgeGroup);
+        setFeedback({
+          type: 'success',
+          text: `Question updated in the ${formAgeGroup} question bank.`,
+        });
+      } else {
+        await createQuestion(payload, user.uid);
+        resetForm(formAgeGroup);
+        setFeedback({
+          type: 'success',
+          text: `Question added to the ${formAgeGroup} question bank.`,
+        });
+      }
     } catch (err) {
       setFeedback({
         type: 'error',
-        text: err instanceof Error ? err.message : 'Failed to add question.',
+        text:
+          err instanceof Error
+            ? err.message
+            : editingId
+              ? 'Failed to update question.'
+              : 'Failed to add question.',
       });
     } finally {
       setSubmitting(false);
@@ -191,6 +247,9 @@ export function AdminConsole({
     try {
       await deleteQuestion(questionId);
       setConfirmDeleteId(null);
+      if (editingId === questionId) {
+        resetForm();
+      }
       setFeedback({
         type: 'success',
         text: 'Question removed from the bank.',
@@ -277,7 +336,7 @@ export function AdminConsole({
         if (extracted.length === 0) {
           setFeedback({
             type: 'error',
-            text: 'No multiple-choice questions with 4 options could be extracted from this PDF.',
+            text: 'No multiple-choice questions (2 to 5 options) could be extracted from this PDF.',
           });
           return;
         }
@@ -389,7 +448,7 @@ export function AdminConsole({
             Question Bank Administration
           </h1>
           <p className="text-sm text-slate-600">
-            Add or remove questions anytime. Changes apply immediately for all upcoming quiz attempts.
+            Add, edit, or remove questions anytime. Wrap math expressions in LaTeX ($...$ or $$...$$) for clean equation rendering.
           </p>
         </div>
 
@@ -417,7 +476,7 @@ export function AdminConsole({
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => setSelectedGroup(group)}
+              onClick={() => handleSelectGroup(group)}
               className={`px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer ${
                 active
                   ? 'bg-white text-slate-900 shadow-sm'
@@ -449,8 +508,11 @@ export function AdminConsole({
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: Add Single Question OR Bulk Import (PDF / Excel) */}
-        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+        {/* Left Column: Add / Edit Single Question OR Bulk Import (PDF / Excel) */}
+        <div
+          ref={formCardRef}
+          className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-5"
+        >
           {/* Entry Mode Switcher */}
           <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
             <button
@@ -462,7 +524,7 @@ export function AdminConsole({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Single Question
+              {editingId ? 'Edit Question' : 'Single Question'}
             </button>
             <button
               type="button"
@@ -478,15 +540,49 @@ export function AdminConsole({
           </div>
 
           {entryMode === 'single' ? (
-            <form onSubmit={handleCreate} className="space-y-5">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">
-                  Add Question to {selectedGroup}
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {AGE_GROUP_META[selectedGroup].bracket} · {AGE_GROUP_META[selectedGroup].focus}
-                </p>
+            <form onSubmit={handleSubmitSingle} className="space-y-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    {editingId
+                      ? 'Edit Question'
+                      : `Add Question to ${formAgeGroup}`}
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {AGE_GROUP_META[formAgeGroup].bracket} · {AGE_GROUP_META[formAgeGroup].focus}
+                  </p>
+                </div>
+                {editingId && (
+                  <button
+                    type="button"
+                    onClick={() => resetForm()}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 bg-slate-100 rounded-md hover:text-slate-900 hover:bg-slate-200 transition-colors cursor-pointer shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                    Cancel Edit
+                  </button>
+                )}
               </div>
+
+              {editingId && (
+                <div className="space-y-1.5">
+                  <label htmlFor="q-age-group" className="block text-xs font-semibold text-slate-700">
+                    Age Group Division
+                  </label>
+                  <select
+                    id="q-age-group"
+                    value={formAgeGroup}
+                    onChange={(e) => setFormAgeGroup(e.target.value as AgeGroup)}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
+                  >
+                    {AGE_GROUPS.map((g) => (
+                      <option key={g} value={g}>
+                        {g} ({AGE_GROUP_META[g].bracket})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <label htmlFor="q-topic" className="block text-xs font-semibold text-slate-700">
@@ -499,7 +595,7 @@ export function AdminConsole({
                   required
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
-                  placeholder="e.g., Mental Math, Ratios, Logic"
+                  placeholder="e.g., Mental Math, Ratios, Algebra"
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
                 />
               </div>
@@ -516,9 +612,12 @@ export function AdminConsole({
                   required
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Write the problem clearly..."
+                  placeholder="Write the problem clearly (e.g., Solve $\frac{3x}{2} - 5 = 7$)"
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
                 />
+                <p className="text-[11px] text-slate-500">
+                  Supports LaTeX: inline <code className="font-mono">$x^2 + \frac&#123;1&#125;&#123;2&#125;$</code> or block <code className="font-mono">$$\sqrt&#123;a^2+b^2&#125;$$</code>
+                </p>
               </div>
 
               <div className="space-y-2.5">
@@ -556,7 +655,7 @@ export function AdminConsole({
                       required
                       value={opt}
                       onChange={(e) => handleOptionChange(idx, e.target.value)}
-                      placeholder={`Option ${OPTION_LETTERS[idx]}`}
+                      placeholder={`Option ${OPTION_LETTERS[idx]} (plain text or $LaTeX$)`}
                       className="flex-1 px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
                     />
                     {options.length > 2 && (
@@ -583,19 +682,78 @@ export function AdminConsole({
                   maxLength={600}
                   value={explanation}
                   onChange={(e) => setExplanation(e.target.value)}
-                  placeholder="Short explanation for post-quiz review"
+                  placeholder="Short explanation for post-quiz review ($...$ supported)"
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
                 />
               </div>
 
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:bg-slate-300 transition-colors cursor-pointer"
-              >
-                <Plus className="w-4 h-4" aria-hidden="true" />
-                <span>{submitting ? 'Saving Question...' : `Add to ${selectedGroup} Bank`}</span>
-              </button>
+              {showMathPreview && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Live Math Preview
+                  </p>
+                  {prompt.trim() && (
+                    <div className="text-sm font-medium text-slate-900 leading-relaxed">
+                      <MathText text={prompt} />
+                    </div>
+                  )}
+                  {options.some((o) => o.trim().length > 0) && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
+                      {options.map((opt, idx) =>
+                        opt.trim() ? (
+                          <div
+                            key={idx}
+                            className={`px-2.5 py-1.5 rounded border ${
+                              correctIndex === idx
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                : 'bg-white border-slate-200 text-slate-700'
+                            }`}
+                          >
+                            <span className="font-mono mr-1.5">{OPTION_LETTERS[idx]}.</span>
+                            <MathText text={opt} />
+                          </div>
+                        ) : null
+                      )}
+                    </div>
+                  )}
+                  {explanation.trim() && (
+                    <div className="text-xs text-slate-600 pt-1 border-t border-slate-200/70">
+                      Note: <MathText text={explanation} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:bg-slate-300 transition-colors cursor-pointer"
+                >
+                  {editingId ? (
+                    <Save className="w-4 h-4" aria-hidden="true" />
+                  ) : (
+                    <Plus className="w-4 h-4" aria-hidden="true" />
+                  )}
+                  <span>
+                    {submitting
+                      ? 'Saving...'
+                      : editingId
+                        ? 'Save Changes'
+                        : `Add to ${formAgeGroup} Bank`}
+                  </span>
+                </button>
+                {editingId && (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => resetForm()}
+                    className="px-4 py-2.5 text-sm font-medium text-slate-700 bg-slate-100 border border-slate-200 rounded-lg hover:bg-slate-200 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </form>
           ) : (
             <div className="space-y-5">
@@ -718,7 +876,7 @@ export function AdminConsole({
                               className="mt-0.5 accent-blue-700 cursor-pointer"
                             />
                             <span className="font-semibold text-slate-900 leading-snug">
-                              {idx + 1}. {sq.prompt}
+                              {idx + 1}. <MathText text={sq.prompt} />
                             </span>
                           </label>
                         </div>
@@ -733,7 +891,7 @@ export function AdminConsole({
                                   : 'bg-slate-50 border-slate-200'
                               }`}
                             >
-                              {OPTION_LETTERS[optIdx]}. {opt}
+                              {OPTION_LETTERS[optIdx]}. <MathText text={opt} />
                             </div>
                           ))}
                         </div>
@@ -841,84 +999,111 @@ export function AdminConsole({
             </div>
           ) : (
             <div className="divide-y divide-slate-100">
-              {filteredQuestions.map((q, index) => (
-                <div key={q.id} className="p-5 space-y-3">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="text-xs text-slate-500">
-                        <span className="font-mono tabular-nums font-semibold text-slate-700">
-                          #{index + 1}
-                        </span>
-                        {' · '}
-                        <span>{q.topic}</span>
-                      </div>
-                      <p className="text-sm font-semibold text-slate-900 leading-snug">
-                        {q.prompt}
-                      </p>
-                    </div>
-
-                    <div className="shrink-0">
-                      {confirmDeleteId === q.id ? (
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={deletingId === q.id}
-                            onClick={() => handleRemove(q.id)}
-                            className="px-2.5 py-1 text-xs font-semibold text-white bg-red-600 rounded hover:bg-red-700 cursor-pointer"
-                          >
-                            {deletingId === q.id ? 'Removing...' : 'Confirm Remove'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(null)}
-                            className="px-2 py-1 text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteId(q.id)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 border border-slate-200 rounded-md hover:text-red-700 hover:border-red-200 hover:bg-red-50 transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                    {q.options.map((opt, optIdx) => {
-                      const isCorrect = optIdx === q.correctIndex;
-                      return (
-                        <div
-                          key={optIdx}
-                          className={`px-3 py-1.5 rounded-md border flex items-center justify-between gap-2 ${
-                            isCorrect
-                              ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-medium'
-                              : 'bg-slate-50 border-slate-200 text-slate-600'
-                          }`}
-                        >
-                          <span>
-                            <span className="font-mono mr-1.5">
-                              {OPTION_LETTERS[optIdx]}.
-                            </span>
-                            {opt}
+              {filteredQuestions.map((q, index) => {
+                const isEditingThis = editingId === q.id;
+                return (
+                  <div
+                    key={q.id}
+                    className={`p-5 space-y-3 transition-colors ${
+                      isEditingThis ? 'bg-blue-50/40 ring-1 ring-inset ring-blue-600/30' : ''
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="text-xs text-slate-500">
+                          <span className="font-mono tabular-nums font-semibold text-slate-700">
+                            #{index + 1}
                           </span>
-                          {isCorrect && (
-                            <CheckCircle2
-                              className="w-3.5 h-3.5 text-emerald-700 shrink-0"
-                              aria-label="Correct answer"
-                            />
+                          {' · '}
+                          <span>{q.topic}</span>
+                          {isEditingThis && (
+                            <span className="text-blue-700 font-semibold"> · Editing</span>
                           )}
                         </div>
-                      );
-                    })}
+                        <p className="text-sm font-semibold text-slate-900 leading-snug">
+                          <MathText text={q.prompt} />
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 flex items-center gap-2">
+                        {confirmDeleteId === q.id ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled={deletingId === q.id}
+                              onClick={() => handleRemove(q.id)}
+                              className="px-2.5 py-1 text-xs font-semibold text-white bg-red-600 rounded hover:bg-red-700 cursor-pointer"
+                            >
+                              {deletingId === q.id ? 'Removing...' : 'Confirm Remove'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="px-2 py-1 text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleStartEdit(q)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 border border-slate-200 rounded-md hover:text-blue-700 hover:border-blue-200 hover:bg-blue-50 transition-colors cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(q.id)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 border border-slate-200 rounded-md hover:text-red-700 hover:border-red-200 hover:bg-red-50 transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      {q.options.map((opt, optIdx) => {
+                        const isCorrect = optIdx === q.correctIndex;
+                        return (
+                          <div
+                            key={optIdx}
+                            className={`px-3 py-1.5 rounded-md border flex items-center justify-between gap-2 ${
+                              isCorrect
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-medium'
+                                : 'bg-slate-50 border-slate-200 text-slate-600'
+                            }`}
+                          >
+                            <span>
+                              <span className="font-mono mr-1.5">
+                                {OPTION_LETTERS[optIdx]}.
+                              </span>
+                              <MathText text={opt} />
+                            </span>
+                            {isCorrect && (
+                              <CheckCircle2
+                                className="w-3.5 h-3.5 text-emerald-700 shrink-0"
+                                aria-label="Correct answer"
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {q.explanation && (
+                      <p className="text-xs text-slate-500 pt-0.5">
+                        Note: <MathText text={q.explanation} />
+                      </p>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

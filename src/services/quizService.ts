@@ -7,6 +7,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
   writeBatch,
   type Timestamp,
@@ -190,6 +191,46 @@ export async function createQuestion(
     return questionId;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function updateQuestion(
+  questionId: string,
+  input: NewQuestionInput
+): Promise<void> {
+  const prompt = input.prompt.trim().slice(0, 1200);
+  const topic = (input.topic.trim() || 'General').slice(0, 80);
+  const explanation = input.explanation.trim().slice(0, 600);
+  const options = input.options
+    .slice(0, 5)
+    .map((o) => o.trim().slice(0, 300));
+
+  if (prompt.length < 3) {
+    throw new Error('Question prompt must be at least 3 characters.');
+  }
+  if (options.length < 2 || options.length > 5) {
+    throw new Error('Questions must have between 2 and 5 answer choices.');
+  }
+  if (options.some((opt) => opt.length < 1)) {
+    throw new Error('All added answer choices must be filled in.');
+  }
+  if (input.correctIndex < 0 || input.correctIndex >= options.length) {
+    throw new Error('Please select a valid correct answer choice.');
+  }
+
+  const path = `questions/${questionId}`;
+  try {
+    await updateDoc(doc(db, 'questions', questionId), {
+      ageGroup: input.ageGroup,
+      prompt,
+      options,
+      correctIndex: input.correctIndex,
+      topic,
+      explanation,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 

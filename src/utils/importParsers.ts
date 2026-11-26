@@ -199,15 +199,15 @@ export function downloadExcelTemplate(defaultAgeGroup: AgeGroup): void {
     },
     {
       AgeGroup: defaultAgeGroup,
-      Topic: 'Geometry',
-      Prompt: 'How many sides does a regular pentagon have?',
-      OptionA: '4',
-      OptionB: '5',
-      OptionC: '6',
-      OptionD: '8',
+      Topic: 'Algebra',
+      Prompt: 'Solve for $x$: $\\frac{3x}{2} - 4 = 5$.',
+      OptionA: '$x = 4$',
+      OptionB: '$x = 6$',
+      OptionC: '$x = 8$',
+      OptionD: '$x = 9$',
       OptionE: '',
       Correct: 'B',
-      Explanation: 'A pentagon is a five-sided polygon (OptionE left blank for 4-choice question).',
+      Explanation: 'Adding 4 gives $\\frac{3x}{2} = 9$, so $3x = 18$ and $x = 6$ (OptionE blank for 4 choices).',
     },
   ];
 

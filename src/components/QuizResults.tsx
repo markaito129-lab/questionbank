@@ -10,6 +10,7 @@ import {
 import { OPTION_LETTERS, type CompletedQuizResult } from '../types';
 import { submitLeaderboardEntry } from '../services/quizService';
 import { formatDurationMMSS, formatScore } from '../utils/formatters';
+import { MathText } from './MathText';
 
 interface QuizResultsProps {
   result: CompletedQuizResult;
@@ -235,7 +236,9 @@ export function QuizResults({
                   )}
                 </div>
 
-                <p className="text-base font-medium text-slate-900">{question.prompt}</p>
+                <p className="text-base font-medium text-slate-900">
+                  <MathText text={question.prompt} />
+                </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
                   {question.options.map((opt, optIdx) => {
@@ -254,7 +257,7 @@ export function QuizResults({
                       >
                         <span>
                           <span className="font-mono text-xs mr-2">{OPTION_LETTERS[optIdx]}.</span>
-                          {opt}
+                          <MathText text={opt} />
                         </span>
                         {isAnswer && (
                           <span className="text-[11px] font-semibold text-emerald-700 shrink-0">
@@ -273,7 +276,7 @@ export function QuizResults({
 
                 {question.explanation && (
                   <p className="text-xs text-slate-600 pt-1">
-                    Note: {question.explanation}
+                    Note: <MathText text={question.explanation} />
                   </p>
                 )}
               </div>
