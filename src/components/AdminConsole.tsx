@@ -1,24 +1,38 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
   CheckCircle2,
   Database,
+  Download,
+  FileSpreadsheet,
+  FileText,
   Plus,
   Search,
   ShieldAlert,
   Trash2,
+  Upload,
+  X,
 } from 'lucide-react';
 import {
   AGE_GROUPS,
   AGE_GROUP_META,
+  MAX_QUESTION_OPTIONS,
+  OPTION_LETTERS,
   type AgeGroup,
+  type NewQuestionInput,
   type Question,
 } from '../types';
 import {
   createQuestion,
+  createQuestionsBatch,
   deleteQuestion,
   seedStarterQuestions,
 } from '../services/quizService';
+import {
+  downloadExcelTemplate,
+  fileToBase64,
+  parseSpreadsheetFile,
+} from '../utils/importParsers';
 
 interface AdminConsoleProps {
   user: User | null;
@@ -28,7 +42,10 @@ interface AdminConsoleProps {
   onSignIn: () => void;
 }
 
-const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const;
+interface StagedQuestion extends NewQuestionInput {
+  tempId: string;
+  selected: boolean;
+}
 
 export function AdminConsole({
   user,
@@ -38,20 +55,23 @@ export function AdminConsole({
   onSignIn,
 }: AdminConsoleProps) {
   const [selectedGroup, setSelectedGroup] = useState<AgeGroup>('Beginners');
+  const [entryMode, setEntryMode] = useState<'single' | 'import'>('single');
   const [topic, setTopic] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [options, setOptions] = useState<[string, string, string, string]>([
-    '',
-    '',
-    '',
-    '',
-  ]);
-  const [correctIndex, setCorrectIndex] = useState<0 | 1 | 2 | 3>(0);
+  const [options, setOptions] = useState<string[]>(['', '', '', '']);
+  const [correctIndex, setCorrectIndex] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [explanation, setExplanation] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
   const [seeding, setSeeding] = useState(false);
+  const [parsingFile, setParsingFile] = useState(false);
+  const [importingBatch, setImportingBatch] = useState(false);
+  const [stagedQuestions, setStagedQuestions] = useState<StagedQuestion[]>([]);
+  const [importNotes, setImportNotes] = useState<string>('');
+  const [sourceFileName, setSourceFileName] = useState<string>('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
   );
@@ -88,14 +108,22 @@ export function AdminConsole({
   }, [questions, searchTerm, selectedGroup]);
 
   const handleOptionChange = (index: number, value: string) => {
-    const next: [string, string, string, string] = [...options] as [
-      string,
-      string,
-      string,
-      string,
-    ];
-    next[index] = value;
-    setOptions(next);
+    setOptions((prev) => prev.map((item, i) => (i === index ? value : item)));
+  };
+
+  const handleAddOption = () => {
+    if (options.length >= MAX_QUESTION_OPTIONS) return;
+    setOptions((prev) => [...prev, '']);
+  };
+
+  const handleRemoveOption = (index: number) => {
+    if (options.length <= 2) return;
+    setOptions((prev) => prev.filter((_, i) => i !== index));
+    if (correctIndex === index) {
+      setCorrectIndex(0);
+    } else if (correctIndex > index) {
+      setCorrectIndex((correctIndex - 1) as 0 | 1 | 2 | 3 | 4);
+    }
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -174,6 +202,133 @@ export function AdminConsole({
       });
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleFileUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setFeedback(null);
+    setImportNotes('');
+    setStagedQuestions([]);
+    setSourceFileName(file.name);
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const isPdf = file.type === 'application/pdf' || ext === 'pdf';
+    const isSpreadsheet = ['xlsx', 'xls', 'csv'].includes(ext);
+
+    if (!isPdf && !isSpreadsheet) {
+      setFeedback({
+        type: 'error',
+        text: 'Unsupported file type. Please upload a .pdf, .xlsx, .xls, or .csv file.',
+      });
+      return;
+    }
+
+    setParsingFile(true);
+    try {
+      if (isSpreadsheet) {
+        const result = await parseSpreadsheetFile(file, selectedGroup);
+        if (result.questions.length === 0) {
+          setFeedback({
+            type: 'error',
+            text:
+              result.skippedRows[0]?.reason ||
+              'No valid multiple-choice questions were found in this spreadsheet.',
+          });
+          return;
+        }
+        setStagedQuestions(
+          result.questions.map((q, idx) => ({
+            ...q,
+            tempId: `xlsx_${Date.now()}_${idx}`,
+            selected: true,
+          }))
+        );
+        if (result.skippedRows.length > 0) {
+          setImportNotes(
+            `Skipped ${result.skippedRows.length} row(s): ${result.skippedRows
+              .slice(0, 3)
+              .map((r) => `Row ${r.rowNumber} (${r.reason})`)
+              .join('; ')}`
+          );
+        }
+      } else {
+        if (file.size > 15 * 1024 * 1024) {
+          throw new Error('PDF exceeds 15 MB. Please upload a smaller PDF file.');
+        }
+        const pdfBase64 = await fileToBase64(file);
+        const res = await fetch('/api/parse-pdf-questions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pdfBase64,
+            defaultAgeGroup: selectedGroup,
+          }),
+        });
+        const data = (await res.json()) as {
+          questions?: NewQuestionInput[];
+          skippedCount?: number;
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to parse PDF file.');
+        }
+        const extracted = data.questions || [];
+        if (extracted.length === 0) {
+          setFeedback({
+            type: 'error',
+            text: 'No multiple-choice questions with 4 options could be extracted from this PDF.',
+          });
+          return;
+        }
+        setStagedQuestions(
+          extracted.map((q, idx) => ({
+            ...q,
+            tempId: `pdf_${Date.now()}_${idx}`,
+            selected: true,
+          }))
+        );
+        if (data.skippedCount && data.skippedCount > 0) {
+          setImportNotes(
+            `Skipped ${data.skippedCount} incomplete or non-multiple-choice item(s) in the PDF.`
+          );
+        }
+      }
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to parse uploaded file.',
+      });
+    } finally {
+      setParsingFile(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleCommitBatch = async () => {
+    if (!user) return;
+    const toImport = stagedQuestions.filter((q) => q.selected);
+    if (toImport.length === 0) return;
+    setImportingBatch(true);
+    setFeedback(null);
+    try {
+      const count = await createQuestionsBatch(toImport, user.uid);
+      setStagedQuestions([]);
+      setImportNotes('');
+      setSourceFileName('');
+      setFeedback({
+        type: 'success',
+        text: `Imported ${count} question${count === 1 ? '' : 's'} into Firestore.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Batch import failed.',
+      });
+    } finally {
+      setImportingBatch(false);
     }
   };
 
@@ -294,107 +449,369 @@ export function AdminConsole({
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Add Question Form */}
-        <form
-          onSubmit={handleCreate}
-          className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-5"
-        >
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">
-              Add Question to {selectedGroup}
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {AGE_GROUP_META[selectedGroup].bracket} · {AGE_GROUP_META[selectedGroup].focus}
-            </p>
+        {/* Left Column: Add Single Question OR Bulk Import (PDF / Excel) */}
+        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+          {/* Entry Mode Switcher */}
+          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+            <button
+              type="button"
+              onClick={() => setEntryMode('single')}
+              className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                entryMode === 'single'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Single Question
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntryMode('import')}
+              className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                entryMode === 'import'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Import PDF / Excel
+            </button>
           </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="q-topic" className="block text-xs font-semibold text-slate-700">
-              Topic / Skill Area
-            </label>
-            <input
-              id="q-topic"
-              type="text"
-              maxLength={80}
-              required
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="e.g., Mental Math, Ratios, Logic"
-              className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
-            />
-          </div>
+          {entryMode === 'single' ? (
+            <form onSubmit={handleCreate} className="space-y-5">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">
+                  Add Question to {selectedGroup}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {AGE_GROUP_META[selectedGroup].bracket} · {AGE_GROUP_META[selectedGroup].focus}
+                </p>
+              </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="q-prompt" className="block text-xs font-semibold text-slate-700">
-              Question Prompt
-            </label>
-            <textarea
-              id="q-prompt"
-              rows={3}
-              minLength={3}
-              maxLength={1200}
-              required
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Write the problem clearly..."
-              className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
-            />
-          </div>
-
-          <div className="space-y-2.5">
-            <span className="block text-xs font-semibold text-slate-700">
-              Answer Choices (mark the correct choice)
-            </span>
-            {options.map((opt, idx) => (
-              <div key={idx} className="flex items-center gap-2.5">
+              <div className="space-y-1.5">
+                <label htmlFor="q-topic" className="block text-xs font-semibold text-slate-700">
+                  Topic / Skill Area
+                </label>
                 <input
-                  type="radio"
-                  name="correctOption"
-                  checked={correctIndex === idx}
-                  onChange={() => setCorrectIndex(idx as 0 | 1 | 2 | 3)}
-                  aria-label={`Mark option ${OPTION_LETTERS[idx]} as correct`}
-                  className="w-4 h-4 accent-blue-700 cursor-pointer shrink-0"
-                />
-                <span className="text-xs font-mono font-semibold text-slate-500 w-4 shrink-0">
-                  {OPTION_LETTERS[idx]}
-                </span>
-                <input
+                  id="q-topic"
                   type="text"
-                  maxLength={300}
+                  maxLength={80}
                   required
-                  value={opt}
-                  onChange={(e) => handleOptionChange(idx, e.target.value)}
-                  placeholder={`Option ${OPTION_LETTERS[idx]}`}
-                  className="flex-1 px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  placeholder="e.g., Mental Math, Ratios, Logic"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
                 />
               </div>
-            ))}
-          </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="q-explanation" className="block text-xs font-semibold text-slate-700">
-              Brief Solution Note (optional, shown after quiz ends)
-            </label>
-            <input
-              id="q-explanation"
-              type="text"
-              maxLength={600}
-              value={explanation}
-              onChange={(e) => setExplanation(e.target.value)}
-              placeholder="Short explanation for post-quiz review"
-              className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
-            />
-          </div>
+              <div className="space-y-1.5">
+                <label htmlFor="q-prompt" className="block text-xs font-semibold text-slate-700">
+                  Question Prompt
+                </label>
+                <textarea
+                  id="q-prompt"
+                  rows={3}
+                  minLength={3}
+                  maxLength={1200}
+                  required
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="Write the problem clearly..."
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
+                />
+              </div>
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:bg-slate-300 transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" aria-hidden="true" />
-            <span>{submitting ? 'Saving Question...' : `Add to ${selectedGroup} Bank`}</span>
-          </button>
-        </form>
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="block text-xs font-semibold text-slate-700">
+                    Answer Choices (2 to 5 choices · mark the correct choice)
+                  </span>
+                  {options.length < MAX_QUESTION_OPTIONS && (
+                    <button
+                      type="button"
+                      onClick={handleAddOption}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:underline cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                      Add Choice {OPTION_LETTERS[options.length]}
+                    </button>
+                  )}
+                </div>
+                {options.map((opt, idx) => (
+                  <div key={idx} className="flex items-center gap-2.5">
+                    <input
+                      type="radio"
+                      name="correctOption"
+                      checked={correctIndex === idx}
+                      onChange={() => setCorrectIndex(idx as 0 | 1 | 2 | 3 | 4)}
+                      aria-label={`Mark option ${OPTION_LETTERS[idx]} as correct`}
+                      className="w-4 h-4 accent-blue-700 cursor-pointer shrink-0"
+                    />
+                    <span className="text-xs font-mono font-semibold text-slate-500 w-4 shrink-0">
+                      {OPTION_LETTERS[idx]}
+                    </span>
+                    <input
+                      type="text"
+                      maxLength={300}
+                      required
+                      value={opt}
+                      onChange={(e) => handleOptionChange(idx, e.target.value)}
+                      placeholder={`Option ${OPTION_LETTERS[idx]}`}
+                      className="flex-1 px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
+                    />
+                    {options.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveOption(idx)}
+                        aria-label={`Remove option ${OPTION_LETTERS[idx]}`}
+                        className="p-1.5 text-slate-400 hover:text-red-700 rounded hover:bg-red-50 transition-colors cursor-pointer shrink-0"
+                      >
+                        <X className="w-3.5 h-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="q-explanation" className="block text-xs font-semibold text-slate-700">
+                  Brief Solution Note (optional, shown after quiz ends)
+                </label>
+                <input
+                  id="q-explanation"
+                  type="text"
+                  maxLength={600}
+                  value={explanation}
+                  onChange={(e) => setExplanation(e.target.value)}
+                  placeholder="Short explanation for post-quiz review"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:bg-slate-300 transition-colors cursor-pointer"
+              >
+                <Plus className="w-4 h-4" aria-hidden="true" />
+                <span>{submitting ? 'Saving Question...' : `Add to ${selectedGroup} Bank`}</span>
+              </button>
+            </form>
+          ) : (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">
+                  Bulk Import Questions
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Upload a PDF worksheet or Excel/CSV spreadsheet. Default division: <strong>{selectedGroup}</strong>.
+                </p>
+              </div>
+
+              {/* Dropzone / File Selector */}
+              <label
+                htmlFor="bulk-file-upload"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  void handleFileUpload(e.dataTransfer.files?.[0]);
+                }}
+                className="block border-2 border-dashed border-slate-300 hover:border-blue-600 rounded-xl p-6 text-center bg-slate-50 hover:bg-blue-50/30 transition-colors cursor-pointer"
+              >
+                <input
+                  ref={fileInputRef}
+                  id="bulk-file-upload"
+                  type="file"
+                  accept=".pdf,.xlsx,.xls,.csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                  disabled={parsingFile}
+                  onChange={(e) => void handleFileUpload(e.target.files?.[0])}
+                  className="sr-only"
+                />
+                <Upload className="w-7 h-7 text-blue-700 mx-auto mb-2" aria-hidden="true" />
+                <p className="text-sm font-semibold text-slate-900">
+                  {parsingFile
+                    ? 'Extracting questions from file...'
+                    : 'Choose or drop PDF / Excel file'}
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Supports .pdf (max 15 MB), .xlsx, .xls, and .csv
+                </p>
+              </label>
+
+              {/* Format Guide & Template Download */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5 text-xs text-slate-600">
+                <div className="flex items-start gap-2">
+                  <FileText className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>
+                    <strong className="text-slate-800">PDF Upload:</strong> Automatically extracts multiple-choice questions (up to 5 options A–E) and correct answers.
+                  </span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>
+                    <strong className="text-slate-800">Excel / CSV Columns:</strong> Prompt, OptionA–OptionD, optional OptionE, Correct (A–E), plus optional AgeGroup, Topic, Explanation.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => downloadExcelTemplate(selectedGroup)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:underline pt-1 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  Download Excel Template (.xlsx)
+                </button>
+              </div>
+
+              {/* Staged Questions Preview */}
+              {stagedQuestions.length > 0 && (
+                <div className="space-y-3 pt-2 border-t border-slate-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs text-slate-700">
+                      <strong>{stagedQuestions.filter((q) => q.selected).length}</strong> of{' '}
+                      <strong>{stagedQuestions.length}</strong> extracted from{' '}
+                      <span className="font-mono">{sourceFileName}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStagedQuestions([]);
+                        setImportNotes('');
+                        setSourceFileName('');
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-900 underline cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  {importNotes && (
+                    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      {importNotes}
+                    </p>
+                  )}
+
+                  <div className="max-h-96 overflow-y-auto space-y-2.5 pr-1">
+                    {stagedQuestions.map((sq, idx) => (
+                      <div
+                        key={sq.tempId}
+                        className={`p-3 rounded-lg border text-xs space-y-2 ${
+                          sq.selected
+                            ? 'bg-white border-slate-200'
+                            : 'bg-slate-50 border-slate-200/60 opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <label className="flex items-start gap-2 cursor-pointer flex-1">
+                            <input
+                              type="checkbox"
+                              checked={sq.selected}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setStagedQuestions((prev) =>
+                                  prev.map((item) =>
+                                    item.tempId === sq.tempId
+                                      ? { ...item, selected: checked }
+                                      : item
+                                  )
+                                );
+                              }}
+                              className="mt-0.5 accent-blue-700 cursor-pointer"
+                            />
+                            <span className="font-semibold text-slate-900 leading-snug">
+                              {idx + 1}. {sq.prompt}
+                            </span>
+                          </label>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-1.5 pl-5 text-[11px] text-slate-600">
+                          {sq.options.map((opt, optIdx) => (
+                            <div
+                              key={optIdx}
+                              className={`px-2 py-1 rounded border truncate ${
+                                sq.correctIndex === optIdx
+                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-medium'
+                                  : 'bg-slate-50 border-slate-200'
+                              }`}
+                            >
+                              {OPTION_LETTERS[optIdx]}. {opt}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 pl-5 pt-1">
+                          <select
+                            aria-label={`Division for staged question ${idx + 1}`}
+                            value={sq.ageGroup}
+                            onChange={(e) => {
+                              const nextGroup = e.target.value as AgeGroup;
+                              setStagedQuestions((prev) =>
+                                prev.map((item) =>
+                                  item.tempId === sq.tempId
+                                    ? { ...item, ageGroup: nextGroup }
+                                    : item
+                                )
+                              );
+                            }}
+                            className="px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded"
+                          >
+                            {AGE_GROUPS.map((g) => (
+                              <option key={g} value={g}>
+                                {g}
+                              </option>
+                            ))}
+                          </select>
+
+                          <select
+                            aria-label={`Correct option for staged question ${idx + 1}`}
+                            value={sq.correctIndex}
+                            onChange={(e) => {
+                              const nextCorrect = Number(e.target.value) as 0 | 1 | 2 | 3 | 4;
+                              setStagedQuestions((prev) =>
+                                prev.map((item) =>
+                                  item.tempId === sq.tempId
+                                    ? { ...item, correctIndex: nextCorrect }
+                                    : item
+                                )
+                              );
+                            }}
+                            className="px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded"
+                          >
+                            {sq.options.map((_, optIdx) => (
+                              <option key={OPTION_LETTERS[optIdx]} value={optIdx}>
+                                Answer: {OPTION_LETTERS[optIdx]}
+                              </option>
+                            ))}
+                          </select>
+
+                          <span className="text-[11px] text-slate-500 truncate">
+                            {sq.topic}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={
+                      importingBatch ||
+                      stagedQuestions.filter((q) => q.selected).length === 0
+                    }
+                    onClick={() => void handleCommitBatch()}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:bg-slate-300 transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" aria-hidden="true" />
+                    <span>
+                      {importingBatch
+                        ? 'Importing to Firestore...'
+                        : `Import ${stagedQuestions.filter((q) => q.selected).length} Question(s) to Bank`}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Question Bank List */}
         <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl overflow-hidden">

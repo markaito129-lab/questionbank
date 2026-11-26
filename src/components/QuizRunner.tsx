@@ -7,6 +7,7 @@ import {
   SkipForward,
 } from 'lucide-react';
 import {
+  OPTION_LETTERS,
   QUIZ_DURATION_SECONDS,
   type AgeGroup,
   type CompletedQuizResult,
@@ -26,8 +27,6 @@ interface QuizRunnerProps {
   onComplete: (result: CompletedQuizResult) => void;
   onCancel: () => void;
 }
-
-const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const;
 
 export function QuizRunner({
   ageGroup,
@@ -152,19 +151,21 @@ export function QuizRunner({
     [currentIndex, currentQuestion, finalizeQuiz, totalQuestions]
   );
 
-  // Keyboard shortcuts 1-4 / A-D to select an option
+  // Keyboard shortcuts 1-5 / A-E to select an option
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (finishedRef.current) return;
+      if (finishedRef.current || !currentQuestion) return;
       const key = e.key.toUpperCase();
-      if (key === '1' || key === 'A') setSelectedIndex(0);
-      if (key === '2' || key === 'B') setSelectedIndex(1);
-      if (key === '3' || key === 'C') setSelectedIndex(2);
-      if (key === '4' || key === 'D') setSelectedIndex(3);
+      const maxIdx = currentQuestion.options.length - 1;
+      if ((key === '1' || key === 'A') && 0 <= maxIdx) setSelectedIndex(0);
+      if ((key === '2' || key === 'B') && 1 <= maxIdx) setSelectedIndex(1);
+      if ((key === '3' || key === 'C') && 2 <= maxIdx) setSelectedIndex(2);
+      if ((key === '4' || key === 'D') && 3 <= maxIdx) setSelectedIndex(3);
+      if ((key === '5' || key === 'E') && 4 <= maxIdx) setSelectedIndex(4);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [currentQuestion]);
 
   if (!currentQuestion) {
     return null;

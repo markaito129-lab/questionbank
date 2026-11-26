@@ -52,12 +52,15 @@ export const QUIZ_DURATION_SECONDS = 30 * 60; // 30 minutes = 1800 seconds
 export const POINTS_CORRECT = 1;
 export const PENALTY_WRONG = 0.25;
 
+export const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E'] as const;
+export const MAX_QUESTION_OPTIONS = 5;
+
 export interface Question {
   id: string;
   ageGroup: AgeGroup;
   prompt: string;
-  options: [string, string, string, string];
-  correctIndex: 0 | 1 | 2 | 3;
+  options: string[];
+  correctIndex: 0 | 1 | 2 | 3 | 4;
   topic: string;
   explanation: string;
   isActive: boolean;
@@ -69,8 +72,8 @@ export interface Question {
 export interface NewQuestionInput {
   ageGroup: AgeGroup;
   prompt: string;
-  options: [string, string, string, string];
-  correctIndex: 0 | 1 | 2 | 3;
+  options: string[];
+  correctIndex: 0 | 1 | 2 | 3 | 4;
   topic: string;
   explanation: string;
 }

@@ -7,7 +7,7 @@ import {
   Trophy,
   XCircle,
 } from 'lucide-react';
-import type { CompletedQuizResult } from '../types';
+import { OPTION_LETTERS, type CompletedQuizResult } from '../types';
 import { submitLeaderboardEntry } from '../services/quizService';
 import { formatDurationMMSS, formatScore } from '../utils/formatters';
 
@@ -18,8 +18,6 @@ interface QuizResultsProps {
   onRetake: () => void;
   onViewLeaderboard: () => void;
 }
-
-const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const;
 
 export function QuizResults({
   result,

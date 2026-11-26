@@ -18,11 +18,11 @@
         },
         "options": {
           "type": "array",
-          "description": "Exactly four answer choices for the question."
+          "description": "Two to five answer choices for the question (A through E)."
         },
         "correctIndex": {
           "type": "integer",
-          "description": "Zero-based index (0-3) of the correct choice."
+          "description": "Zero-based index (0-4) of the correct choice."
         },
         "topic": {
           "type": "string",

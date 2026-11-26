@@ -61,20 +61,18 @@ export function subscribeActiveQuestions(
           isAgeGroup(data.ageGroup) &&
           typeof data.prompt === 'string' &&
           Array.isArray(data.options) &&
-          data.options.length === 4 &&
+          data.options.length >= 2 &&
+          data.options.length <= 5 &&
           typeof data.correctIndex === 'number'
         ) {
+          const cleanOptions = data.options.slice(0, 5).map((opt) => String(opt));
+          const safeMaxIdx = cleanOptions.length - 1;
           items.push({
             id: docSnap.id,
             ageGroup: data.ageGroup,
             prompt: data.prompt,
-            options: [
-              String(data.options[0]),
-              String(data.options[1]),
-              String(data.options[2]),
-              String(data.options[3]),
-            ],
-            correctIndex: Math.min(3, Math.max(0, Math.floor(data.correctIndex))) as 0 | 1 | 2 | 3,
+            options: cleanOptions,
+            correctIndex: Math.min(safeMaxIdx, Math.max(0, Math.floor(data.correctIndex))) as 0 | 1 | 2 | 3 | 4,
             topic: typeof data.topic === 'string' ? data.topic : 'General',
             explanation: typeof data.explanation === 'string' ? data.explanation : '',
             isActive: Boolean(data.isActive),
@@ -157,18 +155,21 @@ export async function createQuestion(
   const prompt = input.prompt.trim().slice(0, 1200);
   const topic = (input.topic.trim() || 'General').slice(0, 80);
   const explanation = input.explanation.trim().slice(0, 600);
-  const options: [string, string, string, string] = [
-    input.options[0].trim().slice(0, 300),
-    input.options[1].trim().slice(0, 300),
-    input.options[2].trim().slice(0, 300),
-    input.options[3].trim().slice(0, 300),
-  ];
+  const options = input.options
+    .slice(0, 5)
+    .map((o) => o.trim().slice(0, 300));
 
   if (prompt.length < 3) {
     throw new Error('Question prompt must be at least 3 characters.');
   }
+  if (options.length < 2 || options.length > 5) {
+    throw new Error('Questions must have between 2 and 5 answer choices.');
+  }
   if (options.some((opt) => opt.length < 1)) {
-    throw new Error('All four answer choices must be filled in.');
+    throw new Error('All added answer choices must be filled in.');
+  }
+  if (input.correctIndex < 0 || input.correctIndex >= options.length) {
+    throw new Error('Please select a valid correct answer choice.');
   }
 
   const questionId = makeSafeId('q');
@@ -198,6 +199,65 @@ export async function deleteQuestion(questionId: string): Promise<void> {
     await deleteDoc(doc(db, 'questions', questionId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function createQuestionsBatch(
+  inputs: NewQuestionInput[],
+  adminUid: string
+): Promise<number> {
+  const sanitized = inputs
+    .map((input) => ({
+      ageGroup: input.ageGroup,
+      prompt: input.prompt.trim().slice(0, 1200),
+      options: input.options.slice(0, 5).map((o) => o.trim().slice(0, 300)),
+      correctIndex: input.correctIndex,
+      topic: (input.topic.trim() || 'General').slice(0, 80),
+      explanation: input.explanation.trim().slice(0, 600),
+    }))
+    .filter(
+      (q) =>
+        q.prompt.length >= 3 &&
+        q.options.length >= 2 &&
+        q.options.length <= 5 &&
+        q.options.every((opt) => opt.length >= 1) &&
+        q.correctIndex >= 0 &&
+        q.correctIndex < q.options.length
+    );
+
+  if (sanitized.length === 0) {
+    throw new Error('No valid questions found to import.');
+  }
+
+  // Commit in chunks of 400 to stay safely below Firestore's 500-operation batch limit
+  const CHUNK_SIZE = 400;
+  let totalImported = 0;
+
+  try {
+    for (let offset = 0; offset < sanitized.length; offset += CHUNK_SIZE) {
+      const chunk = sanitized.slice(offset, offset + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((item, idx) => {
+        const questionId = makeSafeId(`imp_${offset + idx}`);
+        batch.set(doc(db, 'questions', questionId), {
+          ageGroup: item.ageGroup,
+          prompt: item.prompt,
+          options: item.options,
+          correctIndex: item.correctIndex,
+          topic: item.topic,
+          explanation: item.explanation,
+          isActive: true,
+          createdBy: adminUid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      totalImported += chunk.length;
+    }
+    return totalImported;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'questions');
   }
 }
 

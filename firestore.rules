@@ -55,13 +55,19 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     // Question Validation Blueprint
     // -------------------------------------------------------------------------
+    function isValidOptionStr(opt) {
+      return opt is string && opt.size() >= 1 && opt.size() <= 300;
+    }
+
     function isValidOptions(options) {
       return options is list
-        && options.size() == 4
-        && options[0] is string && options[0].size() >= 1 && options[0].size() <= 300
-        && options[1] is string && options[1].size() >= 1 && options[1].size() <= 300
-        && options[2] is string && options[2].size() >= 1 && options[2].size() <= 300
-        && options[3] is string && options[3].size() >= 1 && options[3].size() <= 300;
+        && options.size() >= 2
+        && options.size() <= 5
+        && isValidOptionStr(options[0])
+        && isValidOptionStr(options[1])
+        && (options.size() < 3 || isValidOptionStr(options[2]))
+        && (options.size() < 4 || isValidOptionStr(options[3]))
+        && (options.size() < 5 || isValidOptionStr(options[4]));
     }
 
     function isValidQuestion(data) {
@@ -76,7 +82,9 @@ service cloud.firestore {
         && isValidAgeGroup(data.ageGroup)
         && data.prompt is string && data.prompt.size() >= 3 && data.prompt.size() <= 1200
         && isValidOptions(data.options)
-        && data.correctIndex is int && data.correctIndex >= 0 && data.correctIndex <= 3
+        && data.correctIndex is int
+        && data.correctIndex >= 0
+        && data.correctIndex < data.options.size()
         && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 80
         && data.explanation is string && data.explanation.size() <= 600
         && data.isActive is bool
